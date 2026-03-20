@@ -6,10 +6,12 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: cloudflare
 spec:
   tls:
     - hosts:
         - git-steer.ry-ops.dev
+      secretName: git-steer-ui-tls
   rules:
     - host: git-steer.ry-ops.dev
       http:
