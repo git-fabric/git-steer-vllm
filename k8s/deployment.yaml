@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-steer-ui
+  namespace: fabric
+  labels:
+    app: git-steer-ui
+    part-of: fabric-forge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-steer-ui
+  template:
+    metadata:
+      labels:
+        app: git-steer-ui
+    spec:
+      containers:
+        - name: ui
+          image: git-steer-ui:latest
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
