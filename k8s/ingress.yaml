@@ -4,10 +4,14 @@ metadata:
   name: git-steer-ui
   namespace: fabric
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
+  tls:
+    - hosts:
+        - git-steer.ry-ops.dev
   rules:
-    - host: steer.local
+    - host: git-steer.ry-ops.dev
       http:
         paths:
           - path: /
