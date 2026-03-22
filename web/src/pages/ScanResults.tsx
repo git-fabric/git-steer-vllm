@@ -739,6 +739,13 @@ function CveRow({
           </div>
           <p className="text-sm text-contrast leading-relaxed mb-2">{analysisResult.analysis.reason}</p>
 
+          {analysisResult.analysis.cross_repo_conflict && (
+            <div className="mt-2 mb-2 px-3 py-2 rounded-lg bg-warning/15 border border-warning/30">
+              <p className="text-xs font-semibold text-warning">Cross-repo conflict detected</p>
+              <p className="text-xs text-contrast mt-1">{analysisResult.analysis.cross_repo_conflict}</p>
+            </div>
+          )}
+
           {analysisResult.analysis.dependency_chain && analysisResult.analysis.dependency_chain !== 'unknown' && (
             <p className="text-xs text-muted mb-2">
               <span className="font-semibold">Dependency chain:</span> {analysisResult.analysis.dependency_chain}
