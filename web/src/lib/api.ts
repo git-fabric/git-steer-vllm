@@ -39,10 +39,10 @@ export const api = {
   cve: {
     scan: (owner: string, repo: string) => post<ScanResult>('/api/cve/scan', { owner, repo }),
     results: (owner: string, repo: string) => get<ScanResult>(`/api/cve/results/${owner}/${repo}`),
-    fix: (cveId: string, owner: string, repo: string) => {
+    fix: (owner: string, repo: string, alertNumber: number) => {
       // Extract alert number from cveId if it's in format ALERT-N
-      const alertNumber = cveId.startsWith('ALERT-') ? parseInt(cveId.replace('ALERT-', '')) : undefined;
-      return post<any>('/api/cve/fix', { owner, repo, alertNumber, cveId });
+      
+      return post<any>('/api/cve/fix', { owner, repo, alertNumber });
     },
     queue: () => get<QueueItem[]>('/api/cve/queue'),
     fixAll: (owner: string, repo: string) => post<any>('/api/cve/fix-all', { owner, repo }),
