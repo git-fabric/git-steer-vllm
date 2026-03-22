@@ -35,6 +35,7 @@ export const api = {
     list: () => get<Repo[]>('/api/repos'),
     get: (owner: string, repo: string) => get<Repo>(`/api/repos/${owner}/${repo}`),
     add: (body: { owner: string; repo: string }) => post<Repo>('/api/repos', body),
+    scanStatus: () => get<{ repos: CachedScanResult[] }>('/api/repos/scan-status'),
   },
   cve: {
     scan: (owner: string, repo: string) => post<ScanResult>('/api/cve/scan', { owner, repo }),
@@ -117,10 +118,14 @@ export interface FixResult {
 
 export interface FixAllResult {
   total: number;
+  fixable: number;
   fixed: number;
   no_fix: number;
   failed: number;
+  fixes?: Array<{ alertNumber: number; package: string; severity: string; currentVersion: string; fixVersion: string; dependabotUrl: string }>;
   details: Array<{ cve_id: string; status: string; pr_url?: string }>;
+  message?: string;
+  enableDependabotUrl?: string;
 }
 
 export interface VerifyResult {
@@ -189,4 +194,22 @@ export interface TrendData {
 export interface AutoscanConfig {
   enabled: boolean;
   schedule?: 'daily' | 'weekly';
+}
+
+export interface CachedScanResult {
+  scan_id: string;
+  repo: string;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  alert_count: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  fixes_created: number;
+  fixes_merged: number;
+  fixes_verified: number;
+  fixes_failed: number;
+  stale: boolean;
 }

@@ -139,6 +139,33 @@ export async function registerCveRoutes(app: FastifyInstance, config: WebServerC
     }
   };
 
+  // ── Cached scan results for all repos ──────────────────────────────
+
+  // Get cached scan results for all repos (from Redis)
+  app.get('/api/repos/scan-status', async (_req, reply) => {
+    try {
+      const redis = await getRedis();
+      // Get all scan history keys
+      const keys = await redis.keys('gitsteer:scan:latest:*');
+      const results: any[] = [];
+      const now = Date.now();
+      const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+      for (const key of keys) {
+        const raw = await redis.get(key);
+        if (!raw) continue;
+        const scan = JSON.parse(raw);
+        const completedAt = scan.completed_at ? new Date(scan.completed_at).getTime() : 0;
+        const stale = (now - completedAt) > STALE_MS;
+        results.push({ ...scan, stale });
+      }
+
+      return reply.send({ repos: results });
+    } catch (err: any) {
+      return reply.send({ repos: [] });
+    }
+  });
+
   // ── Scan with lifecycle tracking ────────────────────────────────────
 
   app.post<{

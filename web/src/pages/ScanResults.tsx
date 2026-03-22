@@ -27,6 +27,7 @@ export default function ScanResults() {
   const [fixAllProgress, setFixAllProgress] = useState<string | null>(null);
   const [fixAllResult, setFixAllResult] = useState<FixAllResult | null>(null);
   const [applyingAll, setApplyingAll] = useState(false);
+  const [mergingAll, setMergingAll] = useState(false);
 
   useEffect(() => {
     if (!owner || !repo) return;
@@ -243,6 +244,7 @@ export default function ScanResults() {
             <p className="text-sm font-semibold text-contrast">Vulnerability Summary</p>
             {fixAllResult.fixable > 0 && (
               <Button
+                variant="fix"
                 className="text-xs"
                 disabled={applyingAll}
                 onClick={async () => {
@@ -297,7 +299,7 @@ export default function ScanResults() {
                           PR #{thisFixResult.pr.prNumber} &rarr;
                         </a>
                         <Button
-                          variant="primary"
+                          variant="merge"
                           className="text-xs py-1 px-3"
                           disabled={thisIsMerging}
                           onClick={async () => {
@@ -333,7 +335,7 @@ export default function ScanResults() {
                     {/* Show Fix button if no fix result yet */}
                     {!thisFixResult && (
                       <Button
-                        variant="secondary"
+                        variant="fix"
                         className="text-xs py-1 px-3"
                         onClick={async () => {
                           setFixResults((prev) => ({ ...prev, [fixKey]: { loading: true } }));
@@ -369,6 +371,38 @@ export default function ScanResults() {
               })}
             </div>
           )}
+          {/* Merge All button — shown when there are open PRs to merge */}
+          {Object.values(fixResults).some((r: any) => r?.pr?.prNumber && !r?.pr?.merged) && (
+            <div className="mt-3 pt-3 border-t border-border/50">
+              <Button
+                variant="merge"
+                className="text-xs"
+                disabled={mergingAll}
+                onClick={async () => {
+                  if (!owner || !repo) return;
+                  setMergingAll(true);
+                  const toMerge = Object.entries(fixResults).filter(([_, r]: any) => r?.pr?.prNumber && !r?.pr?.merged);
+                  for (const [key, fix] of toMerge as any) {
+                    try {
+                      const res = await api.cve.merge(owner, repo, fix.pr.prNumber);
+                      setFixResults((prev) => ({
+                        ...prev,
+                        [key]: { ...prev[key], pr: { ...prev[key].pr, merged: res.merged, prState: 'closed' } },
+                      }));
+                    } catch (err) {
+                      setFixResults((prev) => ({
+                        ...prev,
+                        [key]: { ...prev[key], mergeError: err instanceof Error ? err.message : 'Merge failed' },
+                      }));
+                    }
+                  }
+                  setMergingAll(false);
+                }}
+              >
+                {mergingAll ? 'Merging All...' : 'Merge All PRs'}
+              </Button>
+            </div>
+          )}
           {fixAllResult.enableDependabotUrl && (
             <a href={fixAllResult.enableDependabotUrl} target="_blank" rel="noopener noreferrer"
                className="inline-block mt-3 text-xs text-accent hover:text-contrast">
@@ -395,6 +429,7 @@ export default function ScanResults() {
           {/* Fix All button */}
           {result && result.cves.some((c) => c.fixed_version && !c.dismissed) && pageStatus !== 'fixing' && (
             <Button
+              variant="fix"
               onClick={handleFixAll}
               className="text-xs"
             >
@@ -412,7 +447,7 @@ export default function ScanResults() {
             </Button>
           )}
           <Button
-            variant="secondary"
+            variant="scan"
             onClick={() => {
               if (owner && repo) {
                 setPageStatus('scanning');
@@ -546,7 +581,7 @@ function CveRow({
         <div className="flex items-center gap-2 flex-wrap">
           {cve.fixed_version && !cve.dismissed && (
             <Button
-              variant="primary"
+              variant="fix"
               className="text-xs py-2 px-4"
               onClick={(e) => {
                 e.stopPropagation();
@@ -558,7 +593,7 @@ function CveRow({
             </Button>
           )}
           <Button
-            variant="secondary"
+            variant="ghost"
             className="text-xs py-2 px-4"
             onClick={(e) => {
               e.stopPropagation();
@@ -568,7 +603,7 @@ function CveRow({
             VEX
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
             className="text-xs py-2 px-4"
             onClick={(e) => {
               e.stopPropagation();
@@ -610,7 +645,7 @@ function CveRow({
                   </span>
                 ) : fixResult.pr.prState === 'open' ? (
                   <Button
-                    variant="primary"
+                    variant="merge"
                     className="text-xs py-1 px-3"
                     onClick={(e) => { e.stopPropagation(); onMerge(); }}
                     disabled={isMerging}
