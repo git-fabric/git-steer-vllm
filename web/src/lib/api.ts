@@ -49,6 +49,7 @@ export const api = {
     merge: (owner: string, repo: string, prNumber: number) => post<any>('/api/cve/merge', { owner, repo, prNumber }),
     fixAll: (owner: string, repo: string) => post<any>('/api/cve/fix-all', { owner, repo }),
     verify: (owner: string, repo: string) => post<VerifyResult>(`/api/cve/verify/${owner}/${repo}`),
+    analyze: (owner: string, repo: string, alertNumber: number) => post<any>('/api/cve/analyze', { owner, repo, alertNumber }),
   },
   scans: {
     recent: (limit = 10) => get<RecentScan[]>(`/api/scans/recent?limit=${limit}`),

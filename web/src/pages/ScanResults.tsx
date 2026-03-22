@@ -21,6 +21,8 @@ export default function ScanResults() {
   const [vexOpen, setVexOpen] = useState<Set<string>>(new Set());
   const [vexMap, setVexMap] = useState<Record<string, VexEntry>>({});
   const [merging, setMerging] = useState<Record<string, boolean>>({});
+  const [analyzing, setAnalyzing] = useState<Set<string>>(new Set());
+  const [analysisResults, setAnalysisResults] = useState<Record<string, any>>({});
 
   // Fix All state
   const [pageStatus, setPageStatus] = useState<ScanPageStatus>('idle');
@@ -198,6 +200,24 @@ export default function ScanResults() {
       }));
     } finally {
       setMerging((prev) => ({ ...prev, [cveId]: false }));
+    }
+  }
+
+  async function handleAnalyze(cveId: string) {
+    if (!owner || !repo) return;
+    const cve = result?.cves.find((c: any) => c.id === cveId);
+    if (!cve?.alertNumber) return;
+    setAnalyzing((prev) => new Set(prev).add(cveId));
+    try {
+      const res = await api.cve.analyze(owner, repo, cve.alertNumber);
+      setAnalysisResults((prev) => ({ ...prev, [cveId]: res }));
+    } catch (err) {
+      setAnalysisResults((prev) => ({
+        ...prev,
+        [cveId]: { error: err instanceof Error ? err.message : 'Analysis failed' },
+      }));
+    } finally {
+      setAnalyzing((prev) => { const n = new Set(prev); n.delete(cveId); return n; });
     }
   }
 
@@ -514,6 +534,10 @@ export default function ScanResults() {
             onVexSave={(status, justification, detail) => handleVexSave(cve.id, status, justification, detail)}
             onMerge={() => handleMerge(cve.id)}
             isMerging={merging[cve.id] ?? false}
+            onAnalyze={() => handleAnalyze(cve.id)}
+            isAnalyzing={analyzing.has(cve.id)}
+            analysisResult={analysisResults[cve.id]}
+            onVexSaveFromAnalysis={(status, justification, detail) => handleVexSave(cve.id, status, justification, detail)}
           />
         ))}
       </div>
@@ -534,6 +558,10 @@ function CveRow({
   onVexSave,
   onMerge,
   isMerging,
+  onAnalyze,
+  isAnalyzing,
+  analysisResult,
+  onVexSaveFromAnalysis,
 }: {
   cve: CveEntry;
   vex?: VexEntry;
@@ -547,6 +575,10 @@ function CveRow({
   onVexSave: (status: VexStatus, justification?: VexJustification, detail?: string) => void;
   onMerge: () => void;
   isMerging: boolean;
+  onAnalyze: () => void;
+  isAnalyzing: boolean;
+  analysisResult?: any;
+  onVexSaveFromAnalysis: (status: VexStatus, justification?: VexJustification, detail?: string) => void;
 }) {
   return (
     <Card className={cve.dismissed ? 'opacity-50' : ''}>
@@ -592,6 +624,17 @@ function CveRow({
               {isFixing ? 'Checking...' : 'Fix'}
             </Button>
           )}
+          <Button
+            variant="secondary"
+            className="text-xs py-2 px-4"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAnalyze();
+            }}
+            disabled={isAnalyzing}
+          >
+            {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+          </Button>
           <Button
             variant="ghost"
             className="text-xs py-2 px-4"
@@ -673,6 +716,83 @@ function CveRow({
         </div>
       )}
 
+      {/* AI Analysis spinner */}
+      {isAnalyzing && (
+        <div className="mt-3 pt-3 border-t-2 border-dashed border-border flex items-center gap-3">
+          <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <span className="text-xs text-muted font-semibold">Analyzing with AI...</span>
+        </div>
+      )}
+
+      {/* AI Analysis result */}
+      {analysisResult && !analysisResult.error && analysisResult.analysis && (
+        <div className="mt-3 pt-3 border-t-2 border-dashed border-border" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-xs text-muted uppercase tracking-wider font-semibold">AI Analysis</span>
+            <AnalysisActionBadge action={analysisResult.analysis.action} />
+            <span className="text-xs text-muted">
+              Confidence: {Math.round((analysisResult.analysis.confidence ?? 0) * 100)}%
+            </span>
+            {analysisResult.cached && (
+              <span className="text-xs text-muted italic">(cached)</span>
+            )}
+          </div>
+          <p className="text-sm text-contrast leading-relaxed mb-2">{analysisResult.analysis.reason}</p>
+
+          {analysisResult.analysis.dependency_chain && analysisResult.analysis.dependency_chain !== 'unknown' && (
+            <p className="text-xs text-muted mb-2">
+              <span className="font-semibold">Dependency chain:</span> {analysisResult.analysis.dependency_chain}
+            </p>
+          )}
+
+          {analysisResult.analysis.command && (
+            <div className="mb-2">
+              <span className="text-xs text-muted font-semibold block mb-1">Recommended command:</span>
+              <div className="relative">
+                <pre className="bg-contrast/5 border border-border rounded-lg p-3 overflow-x-auto">
+                  <code className="text-xs font-mono text-contrast whitespace-pre">{analysisResult.analysis.command}</code>
+                </pre>
+                <button
+                  className="absolute top-2 right-2 text-xs text-muted hover:text-contrast px-2 py-1 rounded bg-base border border-border"
+                  onClick={() => navigator.clipboard.writeText(analysisResult.analysis.command)}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Apply button — auto-VEX for vex actions, or show command for fix_ecosystem */}
+          <div className="flex items-center gap-2 mt-2">
+            {(analysisResult.analysis.action === 'vex_permanent' || analysisResult.analysis.action === 'vex_temporary') && (
+              <Button
+                variant="primary"
+                className="text-xs py-1 px-3"
+                onClick={() => {
+                  const justification = analysisResult.analysis.vex_justification ?? 'vulnerable_code_not_reachable';
+                  const detail = analysisResult.analysis.vex_detail ?? analysisResult.analysis.reason;
+                  onVexSaveFromAnalysis('not_affected', justification, detail);
+                }}
+              >
+                Apply VEX
+              </Button>
+            )}
+            {analysisResult.analysis.action === 'escalate' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-critical/15 text-critical text-xs font-semibold">
+                Requires manual review
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI Analysis error */}
+      {analysisResult?.error && (
+        <div className="mt-2 pt-2 border-t border-dashed border-border">
+          <p className="text-xs text-critical">{analysisResult.error}</p>
+        </div>
+      )}
+
       {/* VEX inline form */}
       {isVexOpen && (
         <VexForm
@@ -718,6 +838,23 @@ function CveRow({
         </div>
       )}
     </Card>
+  );
+}
+
+const ANALYSIS_ACTION_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  fix: { bg: 'bg-safe/15', text: 'text-safe', label: 'Fix' },
+  fix_ecosystem: { bg: 'bg-accent/15', text: 'text-accent', label: 'Fix Ecosystem' },
+  vex_permanent: { bg: 'bg-contrast/10', text: 'text-muted', label: 'VEX (Permanent)' },
+  vex_temporary: { bg: 'bg-warning/15', text: 'text-warning', label: 'VEX (Temporary)' },
+  escalate: { bg: 'bg-critical/15', text: 'text-critical', label: 'Escalate' },
+};
+
+function AnalysisActionBadge({ action }: { action: string }) {
+  const style = ANALYSIS_ACTION_STYLES[action] ?? ANALYSIS_ACTION_STYLES.escalate;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${style.bg} ${style.text} text-xs font-semibold`}>
+      {style.label}
+    </span>
   );
 }
 
