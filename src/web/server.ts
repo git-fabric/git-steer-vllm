@@ -19,6 +19,7 @@ import { registerCveRoutes } from './routes/cve.js';
 import { registerVexRoutes } from './routes/vex.js';
 import { registerSbomRoutes } from './routes/sbom.js';
 import { registerStatusRoutes } from './routes/status.js';
+import { registerAnalyzeRoutes } from './routes/analyze.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -48,6 +49,7 @@ export async function startWebServer(config: WebServerConfig): Promise<FastifyIn
   await registerVexRoutes(app, config);
   await registerSbomRoutes(app, config);
   await registerStatusRoutes(app, config);
+  await registerAnalyzeRoutes(app, config);
 
   // Serve static frontend if web-dist/ exists (Docker build)
   const webDistPath = join(process.cwd(), 'web-dist');
@@ -75,6 +77,7 @@ export async function startWebServer(config: WebServerConfig): Promise<FastifyIn
   console.log(`[git-steer]   SBOM     : http://localhost:${port}/api/sbom/:owner/:repo`);
   console.log(`[git-steer]   Trends   : http://localhost:${port}/api/trends/:owner/:repo`);
   console.log(`[git-steer]   Status   : http://localhost:${port}/api/status`);
+  console.log(`[git-steer]   Analyze  : http://localhost:${port}/api/cve/analyze`);
   console.log(`[git-steer]   Health   : http://localhost:${port}/health`);
 
   return app;
