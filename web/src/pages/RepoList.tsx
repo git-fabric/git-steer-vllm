@@ -5,7 +5,7 @@ import Badge from '../components/Badge';
 import Button from '../components/Button';
 import { api } from '../lib/api';
 import { TrendBars } from './Dashboard';
-import type { RecentScan, TrendData, AutoscanConfig, SeverityCounts } from '../lib/api';
+import type { RecentScan, TrendData, AutoscanConfig, SeverityCounts, CachedScanResult } from '../lib/api';
 
 interface RepoItem {
   owner: string;
@@ -22,6 +22,7 @@ interface RepoMeta {
   lastScan?: RecentScan;
   trend?: number[];
   autoscan?: AutoscanConfig;
+  cachedScan?: CachedScanResult;
 }
 
 export default function RepoList() {
@@ -34,6 +35,8 @@ export default function RepoList() {
   const [orgFilter, setOrgFilter] = useState<string | null>(null);
   const [scanning, setScanning] = useState<string | null>(null);
   const [repoMeta, setRepoMeta] = useState<Record<string, RepoMeta>>({});
+  const [rescanningStale, setRescanningStale] = useState(false);
+  const [rescanProgress, setRescanProgress] = useState<string | null>(null);
 
   useEffect(() => {
     loadRepos();
@@ -46,43 +49,55 @@ export default function RepoList() {
       setRepos(repoList);
       setOrgs(data?.orgs ?? []);
 
-      // Load recent scans to enrich repo cards
+      // Load recent scans and cached scan-status to enrich repo cards
       try {
-        const scans = await api.scans.recent(50);
-        if (Array.isArray(scans)) {
-          const meta: Record<string, RepoMeta> = {};
-          // Group by repo, take latest
-          scans.forEach((scan) => {
-            const key = `${scan.owner}/${scan.repo}`;
-            if (!meta[key] || new Date(scan.scanned_at) > new Date(meta[key].lastScan!.scanned_at)) {
-              meta[key] = { ...meta[key], lastScan: scan };
-            }
-          });
+        const [scans, scanStatusResp] = await Promise.all([
+          api.scans.recent(50).catch(() => []),
+          api.repos.scanStatus().catch(() => ({ repos: [] })),
+        ]);
 
-          // Load trends and autoscan for managed repos (best-effort, parallel)
-          const uniqueRepos = Object.keys(meta);
-          const trendPromises = uniqueRepos.map(async (key) => {
-            const [o, r] = key.split('/');
-            try {
-              const trend = await api.trends.get(o, r);
-              if (trend?.points) {
-                meta[key] = { ...meta[key], trend: trend.points };
-              }
-            } catch { /* trend not available */ }
-          });
-          const autoscanPromises = uniqueRepos.map(async (key) => {
-            const [o, r] = key.split('/');
-            try {
-              const config = await api.autoscan.get(o, r);
-              if (config) {
-                meta[key] = { ...meta[key], autoscan: config };
-              }
-            } catch { /* autoscan not available */ }
-          });
+        const meta: Record<string, RepoMeta> = {};
 
-          await Promise.allSettled([...trendPromises, ...autoscanPromises]);
-          setRepoMeta(meta);
+        // Merge cached scan-status data
+        const cachedScans = scanStatusResp?.repos ?? [];
+        for (const cs of cachedScans) {
+          if (cs.repo) {
+            meta[cs.repo] = { ...meta[cs.repo], cachedScan: cs };
+          }
         }
+
+        // Group recent scans by repo, take latest
+        const scansArr = Array.isArray(scans) ? scans : [];
+        scansArr.forEach((scan) => {
+          const key = `${scan.owner}/${scan.repo}`;
+          if (!meta[key] || !meta[key].lastScan || new Date(scan.scanned_at) > new Date(meta[key].lastScan!.scanned_at)) {
+            meta[key] = { ...meta[key], lastScan: scan };
+          }
+        });
+
+        // Load trends and autoscan for managed repos (best-effort, parallel)
+        const uniqueRepos = Object.keys(meta);
+        const trendPromises = uniqueRepos.map(async (key) => {
+          const [o, r] = key.split('/');
+          try {
+            const trend = await api.trends.get(o, r);
+            if (trend?.points) {
+              meta[key] = { ...meta[key], trend: trend.points };
+            }
+          } catch { /* trend not available */ }
+        });
+        const autoscanPromises = uniqueRepos.map(async (key) => {
+          const [o, r] = key.split('/');
+          try {
+            const config = await api.autoscan.get(o, r);
+            if (config) {
+              meta[key] = { ...meta[key], autoscan: config };
+            }
+          } catch { /* autoscan not available */ }
+        });
+
+        await Promise.allSettled([...trendPromises, ...autoscanPromises]);
+        setRepoMeta(meta);
       } catch {
         // Recent scans API not available
       }
@@ -119,6 +134,45 @@ export default function RepoList() {
         <div>
           <h1 className="font-display font-bold text-3xl text-contrast">Repositories</h1>
           <p className="text-muted mt-1">{repos.length} repos across {orgs.length + 1} orgs</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {Object.values(repoMeta).some((m) => m.cachedScan?.stale) && (
+            <Button
+              variant="scan"
+              className="text-xs"
+              disabled={rescanningStale}
+              onClick={async () => {
+                setRescanningStale(true);
+                const staleRepos = Object.entries(repoMeta)
+                  .filter(([_, m]) => m.cachedScan?.stale)
+                  .map(([key]) => key);
+                for (let i = 0; i < staleRepos.length; i++) {
+                  const [o, r] = staleRepos[i].split('/');
+                  setRescanProgress(`Scanning ${i + 1} of ${staleRepos.length} stale repos...`);
+                  try {
+                    await api.cve.scan(o, r);
+                    // Refresh cached data for this repo
+                    const updated = await api.repos.scanStatus().catch(() => ({ repos: [] }));
+                    const freshScan = (updated?.repos ?? []).find((s) => s.repo === staleRepos[i]);
+                    if (freshScan) {
+                      setRepoMeta((prev) => ({
+                        ...prev,
+                        [staleRepos[i]]: { ...prev[staleRepos[i]], cachedScan: freshScan },
+                      }));
+                    }
+                  } catch { /* skip failed scans */ }
+                  // 2-second delay between scans
+                  if (i < staleRepos.length - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 2000));
+                  }
+                }
+                setRescanProgress(null);
+                setRescanningStale(false);
+              }}
+            >
+              {rescanProgress ?? 'Rescan Stale'}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -182,7 +236,11 @@ export default function RepoList() {
         {filtered.map((r) => {
           const meta = repoMeta[r.fullName];
           const lastScan = meta?.lastScan;
-          const counts = lastScan?.counts;
+          const cached = meta?.cachedScan;
+          // Prefer cached scan data for severity counts
+          const counts = cached
+            ? { critical: cached.critical, high: cached.high, medium: cached.medium, low: cached.low }
+            : lastScan?.counts;
           const hasAlerts = counts && (counts.critical + counts.high + counts.medium + counts.low) > 0;
 
           return (
@@ -214,15 +272,19 @@ export default function RepoList() {
                         {meta.autoscan.schedule ?? 'auto'}
                       </span>
                     )}
+                    {/* Stale indicator */}
+                    {cached?.stale && (
+                      <span className="text-xs font-semibold text-warning bg-warning/15 px-1.5 py-0.5 rounded">stale</span>
+                    )}
                   </div>
                 </div>
               </div>
 
-              {/* Last scan info */}
-              {lastScan && (
+              {/* Last scan info (from cached data or recent scans) */}
+              {(cached || lastScan) && (
                 <div className="mb-3">
                   <p className="text-xs text-muted mb-1.5">
-                    Last scan: {formatRelative(lastScan.scanned_at)}
+                    Last scanned: {cached?.completed_at ? formatRelative(cached.completed_at) : lastScan ? formatRelative(lastScan.scanned_at) : 'unknown'}
                   </p>
                   {hasAlerts && (
                     <div className="flex flex-wrap gap-1">
@@ -246,7 +308,7 @@ export default function RepoList() {
               )}
 
               <Button
-                variant="secondary"
+                variant="scan"
                 className="w-full text-xs"
                 onClick={(e) => {
                   e.stopPropagation();
