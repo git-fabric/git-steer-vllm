@@ -24,6 +24,7 @@ interface AnalysisResult {
   source_usage: string;
   reasoning: string;
   vex_option: string | null;
+  cross_repo_conflict: string | null;
 }
 
 export async function registerAnalyzeRoutes(app: FastifyInstance, config: WebServerConfig): Promise<void> {
@@ -108,7 +109,63 @@ export async function registerAnalyzeRoutes(app: FastifyInstance, config: WebSer
           .join('\n');
       } catch { /* code search may fail */ }
 
-      // 6. Build prompt — AI analyzes dependency chain and fix path, NOT severity
+      // 6. Query cross-repo history for this CVE and package
+      let crossRepoContext = '';
+      try {
+        const redis = await getRedis();
+        // Search for analyses of the same package across all repos
+        const allKeys = await redis.keys('gitsteer:analysis:*');
+        const priorAnalyses: any[] = [];
+        const priorVex: any[] = [];
+
+        for (const key of allKeys) {
+          // Skip the current repo's alert
+          if (key === cacheKey) continue;
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const prior = JSON.parse(raw);
+          if (prior.package === pkg || prior.cve_id === alert.security_advisory?.cve_id) {
+            priorAnalyses.push({
+              repo: prior.repo || key.split(':').slice(2, 4).join('/'),
+              action: prior.analysis?.recommended_action,
+              severity: prior.severity,
+              reasoning: prior.analysis?.reasoning?.slice(0, 100),
+            });
+          }
+        }
+
+        // Check VEX entries for this package
+        const vexKeys = await redis.keys('gitsteer:vex:*');
+        for (const key of vexKeys) {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const vex = JSON.parse(raw);
+          if (vex.cve_id?.includes(pkg) || key.includes(pkg.toLowerCase())) {
+            priorVex.push({
+              repo: key.split(':').slice(2, 4).join('/'),
+              status: vex.status,
+              justification: vex.justification,
+            });
+          }
+        }
+
+        if (priorAnalyses.length > 0) {
+          crossRepoContext += `\nPRIOR ANALYSES of ${pkg} across other repos:\n`;
+          for (const p of priorAnalyses) {
+            crossRepoContext += `  - ${p.repo}: ${p.action} (${p.severity}) — ${p.reasoning}\n`;
+          }
+        }
+
+        if (priorVex.length > 0) {
+          crossRepoContext += `\nEXISTING VEX DECISIONS for ${pkg}:\n`;
+          for (const v of priorVex) {
+            crossRepoContext += `  - ${v.repo}: ${v.status} (${v.justification})\n`;
+          }
+          crossRepoContext += `\nWARNING: If this CVE severity is HIGH or CRITICAL but the package was previously VEX'd as low-risk in another repo, flag this inconsistency in your reasoning.\n`;
+        }
+      } catch { /* cross-repo query failed, proceed without */ }
+
+      // 7. Build prompt — AI analyzes dependency chain and fix path, NOT severity
       const prompt = `You are a dependency analyst for git-steer. Your job is to trace how a vulnerable package entered a project and recommend the best fix approach.
 
 IMPORTANT RULES:
@@ -142,7 +199,8 @@ Answer these questions:
 2. If transitive, what parent package pulls it in?
 3. What is the exact command to fix this in the ${ecosystem} ecosystem?
 4. For LOW severity with no direct import: would a VEX entry be reasonable while waiting for an upstream fix?
-
+5. If there are prior analyses or VEX decisions from other repos, are they consistent with this repo's situation?
+${crossRepoContext}
 Respond with ONLY valid JSON:
 {
   "dependency_type": "direct" | "transitive" | "unknown",
@@ -152,10 +210,11 @@ Respond with ONLY valid JSON:
   "parent_package": "the parent that pulls in the vulnerable package, or null if direct",
   "source_usage": "describe how the project uses this package based on the source grep results",
   "reasoning": "plain English explanation of your recommendation",
-  "vex_option": "if a VEX entry is reasonable, explain why. null if fix is straightforward"
+  "vex_option": "if a VEX entry is reasonable, explain why. null if fix is straightforward",
+  "cross_repo_conflict": "description of any inconsistency with prior VEX decisions from other repos, or null if no conflict"
 }`;
 
-      // 7. Call Ollama
+      // 8. Call Ollama
       const ollamaRes = await fetch(`${ollamaUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -174,7 +233,7 @@ Respond with ONLY valid JSON:
       const ollamaData = (await ollamaRes.json()) as any;
       const rawText = ollamaData.message?.content ?? '';
 
-      // 8. Parse response — strip markdown fences if present
+      // 9. Parse response — strip markdown fences if present
       let analysis: AnalysisResult;
       try {
         const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
@@ -191,6 +250,7 @@ Respond with ONLY valid JSON:
           source_usage: 'AI analysis returned unparseable response',
           reasoning: rawText.slice(0, 300),
           vex_option: null,
+          cross_repo_conflict: null,
         };
       }
 
@@ -205,10 +265,13 @@ Respond with ONLY valid JSON:
         analyzed_at: new Date().toISOString(),
       };
 
-      // 9. Cache in Redis (7-day TTL)
+      // 10. Cache in Redis (7-day TTL) and index by package for cross-repo queries
       try {
         const redis = await getRedis();
         await redis.set(cacheKey, JSON.stringify(result), { EX: ANALYSIS_TTL });
+        // Also index by package for cross-repo queries
+        const pkgKey = `gitsteer:pkg-analysis:${pkg.toLowerCase()}:${owner}:${repo}`;
+        await redis.set(pkgKey, JSON.stringify(result), { EX: ANALYSIS_TTL });
       } catch { /* non-fatal */ }
 
       return reply.send(result);
