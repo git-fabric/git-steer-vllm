@@ -151,9 +151,16 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <span className="text-xs text-muted uppercase tracking-wide whitespace-nowrap">
-                {scan.alert_count} alerts
-              </span>
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                <span className="text-xs text-muted uppercase tracking-wide">
+                  {scan.alert_count} alerts
+                </span>
+                {(scan.fixes_merged ?? 0) > 0 && (
+                  <span className="text-xs text-safe font-semibold">
+                    {scan.fixes_merged} fixed
+                  </span>
+                )}
+              </div>
             </Card>
               );
             })}

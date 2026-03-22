@@ -26,6 +26,7 @@ export default function ScanResults() {
   const [pageStatus, setPageStatus] = useState<ScanPageStatus>('idle');
   const [fixAllProgress, setFixAllProgress] = useState<string | null>(null);
   const [fixAllResult, setFixAllResult] = useState<FixAllResult | null>(null);
+  const [applyingAll, setApplyingAll] = useState(false);
 
   useEffect(() => {
     if (!owner || !repo) return;
@@ -238,7 +239,35 @@ export default function ScanResults() {
       {/* Fix All result summary */}
       {fixAllResult && (
         <div className="mb-6 px-5 py-4 rounded-xl bg-card border-2 border-dashed border-border">
-          <p className="text-sm font-semibold text-contrast mb-3">Vulnerability Summary</p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+            <p className="text-sm font-semibold text-contrast">Vulnerability Summary</p>
+            {fixAllResult.fixable > 0 && (
+              <Button
+                className="text-xs"
+                disabled={applyingAll}
+                onClick={async () => {
+                  if (!owner || !repo || !fixAllResult.fixes) return;
+                  setApplyingAll(true);
+                  for (const fix of fixAllResult.fixes) {
+                    const fixKey = `fixall-${fix.alertNumber}`;
+                    if (fixResults[fixKey]) continue; // already fixed
+                    try {
+                      const res = await api.cve.fix(owner, repo, fix.alertNumber);
+                      setFixResults((prev) => ({ ...prev, [fixKey]: res }));
+                    } catch (err) {
+                      setFixResults((prev) => ({
+                        ...prev,
+                        [fixKey]: { error: err instanceof Error ? err.message : 'Fix failed' },
+                      }));
+                    }
+                  }
+                  setApplyingAll(false);
+                }}
+              >
+                {applyingAll ? 'Applying Fixes...' : 'Apply Fixes'}
+              </Button>
+            )}
+          </div>
           <div className="flex flex-wrap gap-3 text-xs mb-3">
             <span className="text-contrast font-semibold">{fixAllResult.total} total</span>
             <span className="text-safe font-semibold">{fixAllResult.fixable} fixable</span>
