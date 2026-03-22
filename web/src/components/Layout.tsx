@@ -17,15 +17,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
             <Link to="/" className="flex items-center gap-3 group">
-              <img
-                src="/steer-mascot.svg"
-                alt="git-steer mascot"
-                className="w-8 h-8 group-hover:scale-110 transition-transform"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
-              <span className="font-display font-bold text-xl text-contrast tracking-tight">
+              <span className="font-display font-bold text-xl text-contrast tracking-tight group-hover:text-accent transition-colors">
                 git-steer
               </span>
             </Link>
