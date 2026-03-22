@@ -19,7 +19,7 @@
 import crypto from 'crypto';
 import type { FastifyInstance } from 'fastify';
 import type { WebServerConfig } from '../server.js';
-import type { SecurityAlert, TokenGitHubClient } from '../github-token.js';
+import type { SecurityAlert } from '../github-token.js';
 import { getRedis, KEYS } from '../redis.js';
 
 // ── Scan lifecycle types ──────────────────────────────────────────────
@@ -41,39 +41,8 @@ export interface ScanRecord {
   fixes_failed: number;
 }
 
-/** Result from fixing a single alert */
-interface FixResult {
-  alertNumber: number;
-  package: string;
-  cve: string | null;
-  severity: string;
-  prNumber: number;
-  prUrl: string;
-  merged: boolean;
-  error?: string;
-}
-
-/** Summary from fix-all operation */
-interface FixAllSummary {
-  total: number;
-  fixed: number;
-  failed: number;
-  prs: FixResult[];
-}
-
-/** Verification result after fixes */
-interface VerificationResult {
-  previously: number;
-  now: number;
-  resolved: string[];
-  remaining: string[];
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Translate raw GitHub API errors into human-readable messages */
 function humanizeError(err: any): string {
@@ -156,99 +125,6 @@ async function recordTrend(scan: ScanRecord): Promise<void> {
   }
 }
 
-/**
- * Create a security fix PR and merge it for a single alert.
- */
-async function fixAndMerge(
-  gh: TokenGitHubClient,
-  owner: string,
-  repo: string,
-  alert: SecurityAlert,
-): Promise<FixResult> {
-  try {
-    // 1. Create branch + PR
-    const { prNumber, prUrl, branch: _branch } = await gh.createSecurityFixPR(owner, repo, alert);
-
-    // 2. Wait briefly for CI checks to register (if any)
-    await sleep(5000);
-
-    // 3. Merge the PR
-    const merged = await gh.mergePR(owner, repo, prNumber);
-
-    return {
-      alertNumber: alert.alertNumber,
-      package: alert.package,
-      cve: alert.cve,
-      severity: alert.severity,
-      prNumber,
-      prUrl,
-      merged,
-    };
-  } catch (err: any) {
-    return {
-      alertNumber: alert.alertNumber,
-      package: alert.package,
-      cve: alert.cve,
-      severity: alert.severity,
-      prNumber: 0,
-      prUrl: '',
-      merged: false,
-      error: humanizeError(err),
-    };
-  }
-}
-
-/**
- * Fix all fixable alerts: create PRs, merge them, return summary.
- */
-async function fixAll(
-  gh: TokenGitHubClient,
-  owner: string,
-  repo: string,
-  alerts: SecurityAlert[],
-): Promise<FixAllSummary> {
-  const fixable = alerts.filter((a) => a.fixVersion);
-  const results: FixResult[] = [];
-
-  for (const alert of fixable) {
-    const result = await fixAndMerge(gh, owner, repo, alert);
-    results.push(result);
-  }
-
-  return {
-    total: fixable.length,
-    fixed: results.filter((r) => r.merged).length,
-    failed: results.filter((r) => !r.merged).length,
-    prs: results,
-  };
-}
-
-/**
- * Re-scan after fixes to verify which CVEs were resolved.
- */
-async function verifyFixScan(
-  gh: TokenGitHubClient,
-  owner: string,
-  repo: string,
-  previousAlerts: SecurityAlert[],
-): Promise<VerificationResult> {
-  // Wait for GitHub to process merges and update alert states
-  await sleep(10000);
-
-  const currentAlerts = await gh.getSecurityAlertsDetailed(owner, repo);
-  const currentCves = new Set(currentAlerts.map((a) => a.cve ?? `alert-${a.alertNumber}`));
-  const previousCves = previousAlerts.map((a) => a.cve ?? `alert-${a.alertNumber}`);
-
-  const resolved = previousCves.filter((c) => !currentCves.has(c));
-  const remaining = [...currentCves];
-
-  return {
-    previously: previousAlerts.length,
-    now: currentAlerts.length,
-    resolved,
-    remaining,
-  };
-}
 
 // ── Route registration ────────────────────────────────────────────────
 
@@ -462,181 +338,127 @@ export async function registerCveRoutes(app: FastifyInstance, config: WebServerC
     });
   });
 
-  // ── Fix (single) ───────────────────────────────────────────────────
+  // ── Fix (single) — delegates to Dependabot ────────────────────────
 
   app.post<{
-    Body: { owner: string; repo: string; alertNumber?: number; severity?: string; dryRun?: boolean };
+    Body: { owner: string; repo: string; alertNumber?: number; cveId?: string };
   }>('/api/cve/fix', async (req, reply) => {
-    const { owner, repo, alertNumber, severity, dryRun } = req.body;
+    const { owner, repo, alertNumber, cveId } = req.body;
 
-    if (!owner || !repo) {
-      return reply.status(400).send({ error: 'owner and repo are required' });
+    if (!owner || !repo || !alertNumber) {
+      return reply.status(400).send({ error: 'owner, repo, and alertNumber are required' });
     }
 
-    const gh = github as unknown as TokenGitHubClient;
+    const gh = github as any;
+    const octokit = gh.getOctokit ? gh.getOctokit() : gh.octokit;
 
     try {
-      const alerts: SecurityAlert[] = await gh.getSecurityAlertsDetailed(owner, repo);
-      const toFix = alerts.filter((a) => {
-        if (!a.fixVersion) return false;
-        if (alertNumber && a.alertNumber !== alertNumber) return false;
-        if (severity && severity !== 'all') {
-          const severityOrder = ['critical', 'high', 'medium', 'low'];
-          const minIdx = severityOrder.indexOf(severity.toLowerCase());
-          const alertIdx = severityOrder.indexOf(a.severity?.toLowerCase());
-          if (alertIdx < 0 || alertIdx > minIdx) return false;
-        }
-        return true;
+      // Check if alert exists and has a fix
+      const { data: alert } = await octokit.rest.dependabot.getAlert({
+        owner, repo, alert_number: alertNumber,
       });
 
-      if (toFix.length === 0) {
-        return reply.send({ message: 'No fixable vulnerabilities found', totalAlerts: alerts.length });
-      }
-
-      if (dryRun) {
+      if (!alert.security_vulnerability?.first_patched_version) {
         return reply.send({
-          dryRun: true,
-          wouldFix: toFix.length,
-          vulnerabilities: toFix.map((a) => ({
-            package: a.package,
-            severity: a.severity,
-            cve: a.cve,
-            currentVersion: a.currentVersion,
-            fixVersion: a.fixVersion,
-          })),
+          error: 'no_fix_available',
+          message: `No patched version available for ${alert.security_vulnerability?.package?.name}`,
+          alertNumber,
         });
       }
-
-      // Fix a single alert if alertNumber specified, otherwise first match
-      const target = toFix[0];
-      const result = await fixAndMerge(gh, owner, repo, target);
 
       audit({
         action: 'web_cve_fix',
         repo: `${owner}/${repo}`,
-        result: result.merged ? 'success' : 'failure',
-        details: { prNumber: result.prNumber, package: result.package, cve: result.cve },
+        result: 'delegated',
+        details: { alertNumber, package: alert.security_vulnerability?.package?.name, cveId },
       });
 
-      return reply.send(result);
+      return reply.send({
+        status: 'fix_available',
+        package: alert.security_vulnerability?.package?.name,
+        ecosystem: alert.security_vulnerability?.package?.ecosystem,
+        currentVersion: alert.security_vulnerability?.vulnerable_version_range,
+        fixVersion: alert.security_vulnerability?.first_patched_version?.identifier,
+        alertUrl: alert.html_url,
+        message: `Upgrade ${alert.security_vulnerability?.package?.name} to ${alert.security_vulnerability?.first_patched_version?.identifier}`,
+        dependabotUrl: `https://github.com/${owner}/${repo}/security/dependabot/${alertNumber}`,
+      });
     } catch (err: any) {
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: humanizeError(err) });
     }
   });
 
-  // ── Fix All with Redis tracking ─────────────────────────────────────
+  // ── Fix All — report fixable alerts with Dependabot links ──────────
 
   app.post<{
-    Body: { owner: string; repo: string; severity?: string; dryRun?: boolean; verify?: boolean };
+    Body: { owner: string; repo: string };
   }>('/api/cve/fix-all', async (req, reply) => {
-    const { owner, repo, severity, dryRun, verify } = req.body;
+    const { owner, repo } = req.body;
 
     if (!owner || !repo) {
       return reply.status(400).send({ error: 'owner and repo are required' });
     }
 
-    const fullName = `${owner}/${repo}`;
-    const gh = github as unknown as TokenGitHubClient;
+    const gh = github as any;
 
     try {
       const alerts: SecurityAlert[] = await gh.getSecurityAlertsDetailed(owner, repo);
-
-      // Filter to fixable alerts at or above severity threshold
-      const severityOrder = ['critical', 'high', 'medium', 'low'];
-      const minSevIdx = (severity && severity !== 'all')
-        ? severityOrder.indexOf(severity.toLowerCase())
-        : severityOrder.length;
-
-      const fixable = alerts.filter((a) => {
-        if (!a.fixVersion) return false;
-        const idx = severityOrder.indexOf(a.severity?.toLowerCase());
-        return idx >= 0 && idx <= minSevIdx;
-      });
-
-      if (fixable.length === 0) {
-        return reply.send({
-          message: 'No fixable vulnerabilities found',
-          totalAlerts: alerts.length,
-          total: 0,
-          fixed: 0,
-          failed: 0,
-          prs: [],
-        });
-      }
-
-      if (dryRun) {
-        return reply.send({
-          dryRun: true,
-          wouldFix: fixable.length,
-          vulnerabilities: fixable.map((a) => ({
-            alertNumber: a.alertNumber,
-            package: a.package,
-            severity: a.severity,
-            cve: a.cve,
-            currentVersion: a.currentVersion,
-            fixVersion: a.fixVersion,
-          })),
-        });
-      }
-
-      // Execute all fixes
-      const summary = await fixAll(gh, owner, repo, fixable);
-
-      // Update latest scan record with fix counts
-      try {
-        const redis = await getRedis();
-        const latestRaw = await redis.get(KEYS.scanLatest(fullName));
-        if (latestRaw) {
-          const latestScan: ScanRecord = JSON.parse(latestRaw);
-          latestScan.fixes_created = summary.total;
-          latestScan.fixes_merged = summary.fixed;
-          latestScan.fixes_failed = summary.failed;
-          latestScan.status = 'fixes_applied';
-          await redis.set(KEYS.scan(latestScan.scan_id), JSON.stringify(latestScan));
-          await redis.set(KEYS.scanLatest(fullName), JSON.stringify(latestScan));
-        }
-      } catch { /* non-fatal redis failure */ }
+      const fixable = alerts.filter((a: any) => a.fixVersion);
+      const noFix = alerts.filter((a: any) => !a.fixVersion);
 
       audit({
         action: 'web_cve_fix_all',
-        repo: fullName,
-        result: summary.failed === 0 ? 'success' : 'partial',
-        details: { total: summary.total, fixed: summary.fixed, failed: summary.failed },
+        repo: `${owner}/${repo}`,
+        result: 'delegated',
+        details: { total: alerts.length, fixable: fixable.length, no_fix: noFix.length },
       });
-
-      // Optionally run verification scan
-      let verification: VerificationResult | undefined;
-      if (verify && summary.fixed > 0) {
-        verification = await verifyFixScan(gh, owner, repo, alerts);
-      }
 
       return reply.send({
-        ...summary,
-        ...(verification ? { verification } : {}),
+        total: alerts.length,
+        fixable: fixable.length,
+        no_fix: noFix.length,
+        fixed: 0,
+        failed: 0,
+        fixes: fixable.map((a: any) => ({
+          alertNumber: a.alertNumber,
+          package: a.package,
+          ecosystem: a.ecosystem,
+          severity: a.severity,
+          cve: a.cve,
+          currentVersion: a.currentVersion,
+          fixVersion: a.fixVersion,
+          dependabotUrl: `https://github.com/${owner}/${repo}/security/dependabot/${a.alertNumber}`,
+        })),
+        message: fixable.length > 0
+          ? `${fixable.length} vulnerabilities have fixes available. Enable Dependabot security updates on this repo to auto-create PRs, or fix each manually.`
+          : 'No fixes available for the current vulnerabilities.',
+        enableDependabotUrl: `https://github.com/${owner}/${repo}/settings/security_analysis`,
       });
     } catch (err: any) {
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: humanizeError(err) });
     }
   });
 
   // ── Verify (body-based, existing endpoint) ──────────────────────────
 
   app.post<{
-    Body: { owner: string; repo: string; previousAlerts?: SecurityAlert[] };
+    Body: { owner: string; repo: string };
   }>('/api/cve/verify', async (req, reply) => {
-    const { owner, repo, previousAlerts } = req.body;
+    const { owner, repo } = req.body;
 
     if (!owner || !repo) {
       return reply.status(400).send({ error: 'owner and repo are required' });
     }
 
-    const gh = github as unknown as TokenGitHubClient;
+    const gh = github as any;
 
     try {
-      const baseline = previousAlerts ?? await gh.getSecurityAlertsDetailed(owner, repo);
-      const verification = await verifyFixScan(gh, owner, repo, baseline);
-
-      return reply.send(verification);
+      const currentAlerts: SecurityAlert[] = await gh.getSecurityAlertsDetailed(owner, repo);
+      return reply.send({
+        repo: `${owner}/${repo}`,
+        totalAlerts: currentAlerts.length,
+        alerts: currentAlerts,
+      });
     } catch (err: any) {
       return reply.status(500).send({ error: err.message });
     }
@@ -649,7 +471,7 @@ export async function registerCveRoutes(app: FastifyInstance, config: WebServerC
   }>('/api/cve/verify/:owner/:repo', async (req, reply) => {
     const { owner, repo } = req.params;
     const fullName = `${owner}/${repo}`;
-    const gh = github as unknown as TokenGitHubClient;
+    const gh = github as any;
 
     try {
       // Get previous scan for comparison
