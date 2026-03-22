@@ -248,20 +248,96 @@ export default function ScanResults() {
             <p className="text-xs text-muted mb-3">{fixAllResult.message}</p>
           )}
           {fixAllResult.fixes && fixAllResult.fixes.length > 0 && (
-            <div className="space-y-1.5">
-              {fixAllResult.fixes.map((fix: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  <span className="text-safe">&#8226;</span>
-                  <span className="font-mono text-contrast">{fix.package}</span>
-                  <span className="text-muted">{fix.severity}</span>
-                  <span className="text-safe">&rarr; {fix.fixVersion}</span>
-                  {fix.dependabotUrl && (
-                    <a href={fix.dependabotUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast">
-                      Dependabot &rarr;
-                    </a>
-                  )}
+            <div className="space-y-2">
+              {fixAllResult.fixes.map((fix: any, i: number) => {
+                const fixKey = `fixall-${fix.alertNumber}`;
+                const thisFixResult = fixResults[fixKey];
+                const thisIsMerging = merging[fixKey];
+                return (
+                <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs py-1.5 border-b border-border/50 last:border-0">
+                  <Badge severity={fix.severity?.toUpperCase()} />
+                  <span className="font-mono text-contrast font-semibold">{fix.package}</span>
+                  <span className="text-muted">{fix.currentVersion}</span>
+                  <span className="text-safe font-semibold">&rarr; {fix.fixVersion}</span>
+
+                  <div className="flex items-center gap-2 sm:ml-auto">
+                    {/* Show Merge if we have a PR */}
+                    {thisFixResult?.pr?.prNumber && !thisFixResult.pr.merged && (
+                      <>
+                        <a href={thisFixResult.pr.prUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast">
+                          PR #{thisFixResult.pr.prNumber} &rarr;
+                        </a>
+                        <Button
+                          variant="primary"
+                          className="text-xs py-1 px-3"
+                          disabled={thisIsMerging}
+                          onClick={async () => {
+                            setMerging((prev) => ({ ...prev, [fixKey]: true }));
+                            try {
+                              const res = await api.cve.merge(owner!, repo!, thisFixResult.pr.prNumber);
+                              setFixResults((prev) => ({
+                                ...prev,
+                                [fixKey]: { ...prev[fixKey], pr: { ...prev[fixKey].pr, merged: res.merged, prState: 'closed' } },
+                              }));
+                            } catch (err) {
+                              setFixResults((prev) => ({
+                                ...prev,
+                                [fixKey]: { ...prev[fixKey], mergeError: err instanceof Error ? err.message : 'Merge failed' },
+                              }));
+                            } finally {
+                              setMerging((prev) => ({ ...prev, [fixKey]: false }));
+                            }
+                          }}
+                        >
+                          {thisIsMerging ? 'Merging...' : 'Merge'}
+                        </Button>
+                      </>
+                    )}
+                    {thisFixResult?.pr?.merged && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-safe/15 text-safe text-xs font-semibold">
+                        ✓ Merged
+                      </span>
+                    )}
+                    {thisFixResult?.mergeError && (
+                      <span className="text-critical">{thisFixResult.mergeError}</span>
+                    )}
+                    {/* Show Fix button if no fix result yet */}
+                    {!thisFixResult && (
+                      <Button
+                        variant="secondary"
+                        className="text-xs py-1 px-3"
+                        onClick={async () => {
+                          setFixResults((prev) => ({ ...prev, [fixKey]: { loading: true } }));
+                          try {
+                            const res = await api.cve.fix(owner!, repo!, fix.alertNumber);
+                            setFixResults((prev) => ({ ...prev, [fixKey]: res }));
+                          } catch (err) {
+                            setFixResults((prev) => ({
+                              ...prev,
+                              [fixKey]: { error: err instanceof Error ? err.message : 'Fix failed' },
+                            }));
+                          }
+                        }}
+                      >
+                        Fix
+                      </Button>
+                    )}
+                    {thisFixResult?.loading && (
+                      <span className="text-muted">Creating PR...</span>
+                    )}
+                    {thisFixResult?.error && (
+                      <span className="text-critical">{thisFixResult.error}</span>
+                    )}
+                    {/* Dependabot link */}
+                    {fix.dependabotUrl && !thisFixResult?.pr && (
+                      <a href={fix.dependabotUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast">
+                        Dependabot &rarr;
+                      </a>
+                    )}
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
           {fixAllResult.enableDependabotUrl && (
