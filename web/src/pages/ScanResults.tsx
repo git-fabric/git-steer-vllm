@@ -47,6 +47,7 @@ export default function ScanResults() {
         else counts.low++;
         return {
           id: a.cve ?? a.ghsaId ?? `ALERT-${a.alertNumber}`,
+          alertNumber: a.alertNumber,
           severity: sev,
           package_name: a.package ?? 'unknown',
           installed_version: a.currentVersion ?? '',
@@ -104,11 +105,11 @@ export default function ScanResults() {
 
   async function handleFix(cveId: string) {
     if (!owner || !repo) return;
-    const cve = result?.cves.find(c => c.id === cveId);
-    if (!cve) return;
+    const cve = result?.cves.find((c: any) => c.id === cveId);
+    if (!cve || !cve.alertNumber) return;
     setFixing((prev) => new Set(prev).add(cveId));
     try {
-      const res = await api.cve.fix(cveId, owner, repo);
+      const res = await api.cve.fix(owner, repo, cve.alertNumber);
       // res now contains dependabotUrl, package, fixVersion etc
       setFixResults((prev) => ({
         ...prev,
