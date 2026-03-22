@@ -40,7 +40,7 @@ export default function Dashboard() {
         setStatus(s);
         // Handle both array and { queue: [...] } response shapes
         setQueue(Array.isArray(q) ? q : Array.isArray(q?.queue) ? q.queue : []);
-        setRecentScans(Array.isArray(scans) ? scans : []);
+        setRecentScans(Array.isArray(scans) ? scans : Array.isArray(scans?.scans) ? scans.scans : []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load dashboard');
       } finally {
@@ -54,23 +54,13 @@ export default function Dashboard() {
     <div className="animate-fade-in">
       {/* Hero Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6 mb-10">
-        <div className="flex items-center gap-4">
-          <img
-            src="/steer-mascot.svg"
-            alt="git-steer mascot"
-            className="w-16 h-16 sm:w-20 sm:h-20"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-            }}
-          />
-          <div>
-            <h1 className="font-display font-bold text-3xl sm:text-4xl text-contrast">
-              CVE Dashboard
-            </h1>
-            <p className="text-muted mt-1">
-              Vulnerability scanning &amp; remediation at a glance
-            </p>
-          </div>
+        <div>
+          <h1 className="font-display font-bold text-3xl sm:text-4xl text-contrast">
+            git-steer
+          </h1>
+          <p className="text-muted mt-1">
+            CVE scanning &amp; remediation dashboard
+          </p>
         </div>
         <div className="sm:ml-auto">
           <Button onClick={() => navigate('/repos')}>
@@ -127,40 +117,46 @@ export default function Dashboard() {
         )}
 
         <div className="space-y-3">
-          {recentScans.map((scan) => (
+          {recentScans
+            .filter((scan: any) => scan.status === 'complete')
+            .slice(0, 10)
+            .map((scan: any) => {
+              const [scanOwner, scanRepo] = (scan.repo ?? '').split('/');
+              return (
             <Card
-              key={scan.id}
-              onClick={() => navigate(`/repos/${scan.owner}/${scan.repo}`)}
+              key={scan.scan_id ?? scan.id}
+              onClick={() => scanOwner && scanRepo && navigate(`/repos/${scanOwner}/${scanRepo}`)}
               className="flex flex-col sm:flex-row sm:items-center gap-3"
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <StatusDot status={scan.status} />
                   <p className="font-mono text-sm font-medium text-contrast truncate">
-                    {scan.owner}/{scan.repo}
+                    {scan.repo}
                   </p>
                 </div>
                 <p className="text-muted text-xs mt-0.5 ml-5">
-                  {formatTime(scan.scanned_at)}
+                  {formatTime(scan.completed_at ?? scan.started_at)}
                 </p>
               </div>
 
               {/* Severity badges */}
               <div className="flex items-center gap-1.5 flex-wrap">
-                {scan.counts.critical > 0 && <Badge severity="CRITICAL" count={scan.counts.critical} />}
-                {scan.counts.high > 0 && <Badge severity="HIGH" count={scan.counts.high} />}
-                {scan.counts.medium > 0 && <Badge severity="MEDIUM" count={scan.counts.medium} />}
-                {scan.counts.low > 0 && <Badge severity="LOW" count={scan.counts.low} />}
-                {scan.counts.critical === 0 && scan.counts.high === 0 && scan.counts.medium === 0 && scan.counts.low === 0 && (
+                {(scan.critical ?? 0) > 0 && <Badge severity="CRITICAL" count={scan.critical} />}
+                {(scan.high ?? 0) > 0 && <Badge severity="HIGH" count={scan.high} />}
+                {(scan.medium ?? 0) > 0 && <Badge severity="MEDIUM" count={scan.medium} />}
+                {(scan.low ?? 0) > 0 && <Badge severity="LOW" count={scan.low} />}
+                {(scan.critical ?? 0) === 0 && (scan.high ?? 0) === 0 && (scan.medium ?? 0) === 0 && (scan.low ?? 0) === 0 && (
                   <span className="text-xs text-safe font-semibold uppercase tracking-wide">Clean</span>
                 )}
               </div>
 
               <span className="text-xs text-muted uppercase tracking-wide whitespace-nowrap">
-                {scan.status}
+                {scan.alert_count} alerts
               </span>
             </Card>
-          ))}
+              );
+            })}
         </div>
       </section>
 
