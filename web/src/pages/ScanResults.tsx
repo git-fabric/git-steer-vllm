@@ -17,7 +17,7 @@ export default function ScanResults() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [fixing, setFixing] = useState<Set<string>>(new Set());
-  const [fixResults, setFixResults] = useState<Record<string, { prNumber: number; prUrl: string; merged: boolean; error?: string }>>({});
+  const [fixResults, setFixResults] = useState<Record<string, any>>({});
   const [vexOpen, setVexOpen] = useState<Set<string>>(new Set());
   const [vexMap, setVexMap] = useState<Record<string, VexEntry>>({});
 
@@ -104,29 +104,23 @@ export default function ScanResults() {
 
   async function handleFix(cveId: string) {
     if (!owner || !repo) return;
+    const cve = result?.cves.find(c => c.id === cveId);
+    if (!cve) return;
     setFixing((prev) => new Set(prev).add(cveId));
     try {
       const res = await api.cve.fix(cveId, owner, repo);
+      // res now contains dependabotUrl, package, fixVersion etc
       setFixResults((prev) => ({
         ...prev,
-        [cveId]: {
-          prNumber: res.prNumber ?? res.pr_number ?? 0,
-          prUrl: res.prUrl ?? res.pr_url ?? '',
-          merged: res.merged ?? false,
-          error: res.error,
-        },
+        [cveId]: res,
       }));
     } catch (err) {
       setFixResults((prev) => ({
         ...prev,
-        [cveId]: { prNumber: 0, prUrl: '', merged: false, error: err instanceof Error ? err.message : 'Fix failed' },
+        [cveId]: { error: err instanceof Error ? err.message : 'Fix failed' },
       }));
     } finally {
-      setFixing((prev) => {
-        const next = new Set(prev);
-        next.delete(cveId);
-        return next;
-      });
+      setFixing((prev) => { const n = new Set(prev); n.delete(cveId); return n; });
     }
   }
 
@@ -221,34 +215,37 @@ export default function ScanResults() {
       {/* Fix All result summary */}
       {fixAllResult && (
         <div className="mb-6 px-5 py-4 rounded-xl bg-card border-2 border-dashed border-border">
-          <p className="text-sm font-semibold text-contrast mb-3">Fix All Complete</p>
+          <p className="text-sm font-semibold text-contrast mb-3">Vulnerability Summary</p>
           <div className="flex flex-wrap gap-3 text-xs mb-3">
-            <span className="text-safe font-semibold">{fixAllResult.fixed} fixed</span>
+            <span className="text-contrast font-semibold">{fixAllResult.total} total</span>
+            <span className="text-safe font-semibold">{fixAllResult.fixable} fixable</span>
             {fixAllResult.no_fix > 0 && <span className="text-muted font-semibold">{fixAllResult.no_fix} no fix available</span>}
-            {fixAllResult.failed > 0 && <span className="text-critical font-semibold">{fixAllResult.failed} failed</span>}
           </div>
-          {fixAllResult.prs && fixAllResult.prs.length > 0 && (
+          {fixAllResult.message && (
+            <p className="text-xs text-muted mb-3">{fixAllResult.message}</p>
+          )}
+          {fixAllResult.fixes && fixAllResult.fixes.length > 0 && (
             <div className="space-y-1.5">
-              {fixAllResult.prs.map((pr: any, i: number) => (
+              {fixAllResult.fixes.map((fix: any, i: number) => (
                 <div key={i} className="flex items-center gap-2 text-xs">
-                  {pr.merged ? (
-                    <span className="text-safe">✓</span>
-                  ) : pr.error ? (
-                    <span className="text-critical">✗</span>
-                  ) : (
-                    <span className="text-warning">○</span>
-                  )}
-                  <span className="font-mono text-contrast">{pr.package}</span>
-                  <span className="text-muted">{pr.severity}</span>
-                  {pr.prUrl && (
-                    <a href={pr.prUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast">
-                      PR #{pr.prNumber} →
+                  <span className="text-safe">&#8226;</span>
+                  <span className="font-mono text-contrast">{fix.package}</span>
+                  <span className="text-muted">{fix.severity}</span>
+                  <span className="text-safe">&rarr; {fix.fixVersion}</span>
+                  {fix.dependabotUrl && (
+                    <a href={fix.dependabotUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast">
+                      Dependabot &rarr;
                     </a>
                   )}
-                  {pr.error && <span className="text-critical">{pr.error}</span>}
                 </div>
               ))}
             </div>
+          )}
+          {fixAllResult.enableDependabotUrl && (
+            <a href={fixAllResult.enableDependabotUrl} target="_blank" rel="noopener noreferrer"
+               className="inline-block mt-3 text-xs text-accent hover:text-contrast">
+              Enable Dependabot security updates &rarr;
+            </a>
           )}
         </div>
       )}
@@ -373,7 +370,7 @@ function CveRow({
 }: {
   cve: CveEntry;
   vex?: VexEntry;
-  fixResult?: { prNumber: number; prUrl: string; merged: boolean; error?: string };
+  fixResult?: any;
   isExpanded: boolean;
   isFixing: boolean;
   isVexOpen: boolean;
@@ -423,7 +420,7 @@ function CveRow({
               }}
               disabled={isFixing}
             >
-              {isFixing ? 'Creating PR...' : 'Fix'}
+              {isFixing ? 'Checking...' : 'Fix'}
             </Button>
           )}
           <Button
@@ -461,29 +458,22 @@ function CveRow({
       </div>
 
       {/* Fix result feedback */}
-      {fixResult && (
+      {fixResult && !fixResult.error && (
         <div className="mt-2 pt-2 border-t border-dashed border-border" onClick={(e) => e.stopPropagation()}>
-          {fixResult.error ? (
-            <p className="text-xs text-critical font-mono">{fixResult.error}</p>
-          ) : fixResult.merged ? (
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-safe/15 text-safe text-xs font-semibold">
-                ✓ PR #{fixResult.prNumber} merged
-              </span>
-              <a href={fixResult.prUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:text-contrast">
-                View PR →
-              </a>
-            </div>
-          ) : fixResult.prNumber > 0 ? (
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/15 text-warning text-xs font-semibold">
-                PR #{fixResult.prNumber} created
-              </span>
-              <a href={fixResult.prUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:text-contrast">
-                View PR →
-              </a>
-            </div>
-          ) : null}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-safe font-semibold">
+              Fix: upgrade {fixResult.package} to {fixResult.fixVersion}
+            </span>
+            <a href={fixResult.dependabotUrl} target="_blank" rel="noopener noreferrer"
+               className="text-xs text-accent hover:text-contrast">
+              View on Dependabot &rarr;
+            </a>
+          </div>
+        </div>
+      )}
+      {fixResult?.error && (
+        <div className="mt-2 pt-2 border-t border-dashed border-border">
+          <p className="text-xs text-critical">{fixResult.error === 'no_fix_available' ? fixResult.message : fixResult.error}</p>
         </div>
       )}
 
@@ -635,49 +625,143 @@ function VexForm({
   );
 }
 
+/** Render inline markdown: **bold**, `code`, [links](url) */
+function renderInline(text: string): (string | JSX.Element)[] {
+  const parts: (string | JSX.Element)[] = [];
+  let remaining = text;
+  let key = 0;
+
+  while (remaining.length > 0) {
+    // **bold**
+    const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
+    if (boldMatch) {
+      if (boldMatch[1]) parts.push(boldMatch[1]);
+      parts.push(<strong key={key++} className="font-semibold">{boldMatch[2]}</strong>);
+      remaining = boldMatch[3];
+      continue;
+    }
+
+    // `code`
+    const codeMatch = remaining.match(/^(.*?)`(.+?)`(.*)/s);
+    if (codeMatch) {
+      if (codeMatch[1]) parts.push(codeMatch[1]);
+      parts.push(<code key={key++} className="px-1 py-0.5 bg-contrast/10 rounded text-xs font-mono">{codeMatch[2]}</code>);
+      remaining = codeMatch[3];
+      continue;
+    }
+
+    // [text](url)
+    const linkMatch = remaining.match(/^(.*?)\[(.+?)\]\((.+?)\)(.*)/s);
+    if (linkMatch) {
+      if (linkMatch[1]) parts.push(linkMatch[1]);
+      parts.push(<a key={key++} href={linkMatch[3]} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-contrast underline">{linkMatch[2]}</a>);
+      remaining = linkMatch[4];
+      continue;
+    }
+
+    // No more inline patterns
+    parts.push(remaining);
+    break;
+  }
+
+  return parts;
+}
+
 function CveDescription({ text }: { text: string }) {
   if (!text) return null;
 
-  // Split on --- separators and **Section** headers
-  const sections = text.split(/(?=---\s|\*\*[A-Z])/);
+  // Split into lines, process each
+  const lines = text.split('\n');
+  const elements: JSX.Element[] = [];
+  let i = 0;
 
-  return (
-    <div className="space-y-4">
-      {sections.map((section, i) => {
-        const trimmed = section.trim();
-        if (!trimmed || trimmed === '---') return null;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
 
-        // Extract section header if present
-        const headerMatch = trimmed.match(/^\*\*([^*]+)\*\*\s*(.*)/s);
-        const header = headerMatch?.[1];
-        const body = headerMatch ? headerMatch[2].trim() : trimmed.replace(/^---\s*/, '');
+    // Empty line
+    if (!trimmed) { i++; continue; }
 
-        // Check for code blocks
-        const parts = body.split(/(```[\s\S]*?```)/);
+    // Code block
+    if (trimmed.startsWith('```')) {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing ```
+      elements.push(
+        <pre key={elements.length} className="bg-contrast/5 border border-border rounded-lg p-3 overflow-x-auto my-3">
+          <code className="text-xs font-mono text-contrast whitespace-pre">{codeLines.join('\n')}</code>
+        </pre>
+      );
+      continue;
+    }
 
-        return (
-          <div key={i}>
-            {header && (
-              <h4 className="text-xs uppercase tracking-wider font-semibold text-muted mb-2">
-                {header}
-              </h4>
-            )}
-            {parts.map((part, j) => {
-              if (part.startsWith('```')) {
-                const code = part.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-                return (
-                  <pre key={j} className="bg-contrast/5 border border-border rounded-lg p-3 overflow-x-auto mb-2">
-                    <code className="text-xs font-mono text-contrast whitespace-pre">{code}</code>
-                  </pre>
-                );
-              }
-              const descText = part.trim();
-              if (!descText) return null;
-              return <p key={j} className="text-sm text-contrast leading-relaxed">{descText}</p>;
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
+    // ## Heading
+    if (trimmed.startsWith('## ')) {
+      elements.push(
+        <h4 key={elements.length} className="text-sm font-semibold text-contrast uppercase tracking-wider mt-4 mb-2">
+          {trimmed.slice(3)}
+        </h4>
+      );
+      i++; continue;
+    }
+
+    // ### Subheading
+    if (trimmed.startsWith('### ')) {
+      elements.push(
+        <h5 key={elements.length} className="text-xs font-semibold text-muted uppercase tracking-wider mt-3 mb-1">
+          {trimmed.slice(4)}
+        </h5>
+      );
+      i++; continue;
+    }
+
+    // > Blockquote
+    if (trimmed.startsWith('> ')) {
+      const quoteLines: string[] = [trimmed.slice(2)];
+      i++;
+      while (i < lines.length && lines[i].trim().startsWith('> ')) {
+        quoteLines.push(lines[i].trim().slice(2));
+        i++;
+      }
+      elements.push(
+        <blockquote key={elements.length} className="border-l-3 border-accent/40 pl-3 my-2 text-sm text-muted italic">
+          {quoteLines.join(' ')}
+        </blockquote>
+      );
+      continue;
+    }
+
+    // - List item
+    if (trimmed.startsWith('- ')) {
+      const items: string[] = [trimmed.slice(2)];
+      i++;
+      while (i < lines.length && lines[i].trim().startsWith('- ')) {
+        items.push(lines[i].trim().slice(2));
+        i++;
+      }
+      elements.push(
+        <ul key={elements.length} className="list-disc list-inside space-y-1 my-2 text-sm text-contrast">
+          {items.map((item, j) => <li key={j}>{renderInline(item)}</li>)}
+        </ul>
+      );
+      continue;
+    }
+
+    // --- separator
+    if (trimmed === '---') { i++; continue; }
+
+    // Regular paragraph
+    elements.push(
+      <p key={elements.length} className="text-sm text-contrast leading-relaxed my-1">
+        {renderInline(trimmed)}
+      </p>
+    );
+    i++;
+  }
+
+  return <div className="space-y-1">{elements}</div>;
 }
