@@ -40,3 +40,6 @@ consequences:
   - Web dashboard provides visual ops surface for non-CLI users
   - Modelfile is the key differentiator — keeps intelligence model versioned alongside code
   - qwen2.5-coder:7b is small enough to run on k3s worker nodes with 6GB RAM
+
+related:
+  - ADR-002: vLLM CVE Intelligence Layer

@@ -1,0 +1,120 @@
+title: "vLLM CVE Intelligence Layer"
+number: 2
+status: accepted
+date: 2026-03-22
+authors:
+  - ry-ops
+
+context: |
+  The original git-steer can scan for CVEs via Dependabot and create fix PRs for
+  direct dependencies, but it operates at a shallow level. It cannot:
+
+  - Understand transitive dependency chains (e.g., a CVE in a sub-dependency
+    pulled in by a top-level package).
+  - Determine if a CVE is actually exploitable in the repo's code — most CVEs
+    affect code paths that the consuming project never invokes.
+  - Handle ecosystem-specific lock files (uv.lock, pip-compile requirements,
+    pnpm-lock.yaml, go.sum) where the fix is not a simple version bump.
+  - Decide between fix vs VEX vs temporary VEX vs escalation — the OG tool
+    either fixes or ignores, with no middle ground.
+
+  This gap means noisy alerts stay open, real risks get buried, and human
+  reviewers waste time triaging CVEs that a model could classify in seconds.
+
+decision: |
+  git-steer-vllm uses the Ollama model (qwen2.5-coder:7b) to analyze each CVE
+  against the repo's actual source code and dependency graph. The model produces
+  an actionable recommendation: fix, VEX (permanent), VEX (temporary), or
+  escalate.
+
+  Architecture:
+
+    Scan → Dependabot API
+      ↓
+    For each CVE:
+      → Redis cache check (skip if recently analyzed)
+      → Ollama: CVE description + repo source + dependency graph
+      → Returns: { action, reason, command?, justification? }
+      → Execute: fix (PR or ecosystem command), VEX (auto-create), or escalate
+      → Qdrant: store analysis for future reference
+      → Redis: cache the result
+
+  Actions:
+
+  - fix: direct dependency has a patched version available → create PR with
+    version bump.
+  - fix_ecosystem: transitive dependency → suggest ecosystem-specific command
+    (uv lock --upgrade-package, npm audit fix, go get -u).
+  - vex_permanent: vulnerable code path is not reachable in the repo's code →
+    auto-create VEX entry with model-generated justification.
+  - vex_temporary: waiting for upstream fix, no immediate risk → VEX with expiry
+    date, re-check on next scan cycle.
+  - escalate: exploitable vulnerability with no fix available → flag for human
+    review with full analysis context.
+
+constraints:
+  - id: C-002-001
+    level: HARD
+    text: >
+      Ollama analysis must include the actual source code context, not just CVE
+      metadata. The model receives the relevant source files and dependency graph
+      alongside the CVE description.
+
+  - id: C-002-002
+    level: HARD
+    text: >
+      Redis cache TTL for CVE analysis must not exceed 7 days. Stale analysis
+      could miss newly available patches or changed exploit conditions.
+
+  - id: C-002-003
+    level: HARD
+    text: >
+      VEX entries must include the model's reasoning as the detail field. A VEX
+      without justification is unauditable and therefore unacceptable.
+
+  - id: C-002-004
+    level: SOFT
+    text: >
+      Analysis results should be stored in Qdrant for cross-repo learning. This
+      enables the model to reference prior decisions when evaluating similar CVEs
+      across different repositories.
+
+  - id: C-002-005
+    level: SOFT
+    text: >
+      Temporary VEX entries should be re-evaluated on each scan. If upstream
+      publishes a fix, the temporary VEX should convert to a fix action.
+
+  - id: C-002-006
+    level: ADVISORY
+    text: >
+      The model should explain its reasoning in plain English, not just output a
+      classification. Human reviewers need to understand why a CVE was marked as
+      non-exploitable or deferred.
+
+rationale: |
+  Local inference via qwen2.5-coder:7b gives git-steer-vllm the ability to
+  reason about code context without sending source code to external APIs. The
+  7b model is small enough to run on k3s worker nodes (6GB RAM) while being
+  capable enough to understand dependency graphs and code path reachability.
+
+  The five-action taxonomy (fix, fix_ecosystem, vex_permanent, vex_temporary,
+  escalate) covers the full decision space that a human security reviewer would
+  use. Automating the easy cases (clear fix, clearly unreachable) lets humans
+  focus on the genuinely ambiguous escalations.
+
+  Redis caching prevents redundant Ollama calls for the same CVE across
+  consecutive scans. Qdrant storage enables cross-repo knowledge — if a CVE
+  was analyzed as non-exploitable in one repo, that reasoning can inform the
+  analysis of the same CVE in a similar repo.
+
+consequences:
+  - CVE triage becomes model-assisted rather than purely rule-based
+  - VEX entries carry machine-generated justifications, improving audit quality
+  - Transitive dependency CVEs get actionable ecosystem-specific fix commands
+  - Redis + Qdrant provide a feedback loop that improves over time
+  - The 7-day cache TTL ensures analysis stays fresh without excessive compute
+  - Escalation path preserves human oversight for genuinely dangerous CVEs
+
+related:
+  - ADR-001: git-steer-vllm Architecture
