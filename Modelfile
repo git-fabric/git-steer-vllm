@@ -1,8 +1,9 @@
-FROM qwen2.5:14b
+# git-steer-vllm inference model
+FROM qwen2.5-coder:7b
 
 PARAMETER temperature 0.15
 PARAMETER top_p 0.9
-PARAMETER num_ctx 8192
+PARAMETER num_ctx 4096
 PARAMETER stop "<|im_end|>"
 
 SYSTEM """
