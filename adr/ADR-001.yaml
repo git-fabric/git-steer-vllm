@@ -1,0 +1,42 @@
+title: "git-steer-vllm Architecture"
+number: 1
+status: accepted
+date: 2026-03-21
+authors:
+  - ry-ops
+
+context: |
+  The original git-steer repo (ry-ops/git-steer) proved the MCP server model
+  for GitHub autonomy: 60+ tools, GitHub App auth, rate-limit hardening, JSONL
+  state persistence, and multi-org support. git-steer-vllm is the next-gen
+  fork under git-fabric, adding a local vLLM inference model and web dashboard
+  to move from tool execution toward autonomous decision-making.
+
+decision: |
+  git-steer-vllm combines four layers:
+
+  1. OG Tool Suite (src/)
+     All original MCP tools migrated as-is. No tool API changes.
+     TypeScript, ESM, Node 20+.
+
+  2. vLLM Inference Model (Modelfile)
+     qwen2.5-coder:7b via Ollama, system-prompted with git-steer's full
+     architecture knowledge. Temperature 0.15 for deterministic ops reasoning.
+     4096 context window (right-sized for 7b parameter count).
+
+  3. Web Dashboard (src/web/ + web/)
+     Fastify API serving CVE, repo, SBOM, status, and VEX routes.
+     React frontend (Vite + Tailwind) for visual ops management.
+     Dockerfile.web for containerized deployment.
+
+  4. k3s Deployment Target
+     Container images published to ghcr.io/git-fabric/git-steer-vllm.
+     Web dashboard runs as a k3s Deployment with Redis sidecar.
+     MCP server runs as stdio process in Claude Desktop or as fabric app.
+
+consequences:
+  - All OG git-steer tools are available without migration cost
+  - Local inference reduces Claude API dependency for routine decisions
+  - Web dashboard provides visual ops surface for non-CLI users
+  - Modelfile is the key differentiator — keeps intelligence model versioned alongside code
+  - qwen2.5-coder:7b is small enough to run on k3s worker nodes with 6GB RAM
