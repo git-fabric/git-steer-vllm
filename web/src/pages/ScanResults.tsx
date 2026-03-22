@@ -20,6 +20,7 @@ export default function ScanResults() {
   const [fixResults, setFixResults] = useState<Record<string, any>>({});
   const [vexOpen, setVexOpen] = useState<Set<string>>(new Set());
   const [vexMap, setVexMap] = useState<Record<string, VexEntry>>({});
+  const [merging, setMerging] = useState<Record<string, boolean>>({});
 
   // Fix All state
   const [pageStatus, setPageStatus] = useState<ScanPageStatus>('idle');
@@ -175,6 +176,26 @@ export default function ScanResults() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'VEX save failed');
+    }
+  }
+
+  async function handleMerge(cveId: string) {
+    const fix = fixResults[cveId];
+    if (!fix?.pr?.prNumber || !owner || !repo) return;
+    setMerging((prev) => ({ ...prev, [cveId]: true }));
+    try {
+      const res = await api.cve.merge(owner, repo, fix.pr.prNumber);
+      setFixResults((prev) => ({
+        ...prev,
+        [cveId]: { ...prev[cveId], pr: { ...prev[cveId].pr, merged: res.merged, prState: 'closed' }, message: res.message },
+      }));
+    } catch (err) {
+      setFixResults((prev) => ({
+        ...prev,
+        [cveId]: { ...prev[cveId], mergeError: err instanceof Error ? err.message : 'Merge failed' },
+      }));
+    } finally {
+      setMerging((prev) => ({ ...prev, [cveId]: false }));
     }
   }
 
@@ -351,6 +372,8 @@ export default function ScanResults() {
             onFix={() => handleFix(cve.id)}
             onVexToggle={() => toggleVex(cve.id)}
             onVexSave={(status, justification, detail) => handleVexSave(cve.id, status, justification, detail)}
+            onMerge={() => handleMerge(cve.id)}
+            isMerging={merging[cve.id] ?? false}
           />
         ))}
       </div>
@@ -369,6 +392,8 @@ function CveRow({
   onFix,
   onVexToggle,
   onVexSave,
+  onMerge,
+  isMerging,
 }: {
   cve: CveEntry;
   vex?: VexEntry;
@@ -380,6 +405,8 @@ function CveRow({
   onFix: () => void;
   onVexToggle: () => void;
   onVexSave: (status: VexStatus, justification?: VexJustification, detail?: string) => void;
+  onMerge: () => void;
+  isMerging: boolean;
 }) {
   return (
     <Card className={cve.dismissed ? 'opacity-50' : ''}>
@@ -461,16 +488,43 @@ function CveRow({
 
       {/* Fix result feedback */}
       {fixResult && !fixResult.error && (
-        <div className="mt-2 pt-2 border-t border-dashed border-border" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-safe font-semibold">
-              Fix: upgrade {fixResult.package} to {fixResult.fixVersion}
+        <div className="mt-3 pt-3 border-t-2 border-dashed border-border" onClick={(e) => e.stopPropagation()}>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <span className="text-xs font-semibold text-safe">
+              Fix: {fixResult.package} &rarr; {fixResult.fixVersion}
             </span>
-            <a href={fixResult.dependabotUrl} target="_blank" rel="noopener noreferrer"
-               className="text-xs text-accent hover:text-contrast">
-              View on Dependabot &rarr;
-            </a>
+            {fixResult.pr && (
+              <>
+                <a href={fixResult.pr.prUrl} target="_blank" rel="noopener noreferrer"
+                   className="text-xs text-accent hover:text-contrast">
+                  PR #{fixResult.pr.prNumber}: {fixResult.pr.prTitle} &rarr;
+                </a>
+                {fixResult.pr.merged ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-safe/15 text-safe text-xs font-semibold">
+                    &#10003; Merged
+                  </span>
+                ) : fixResult.pr.prState === 'open' ? (
+                  <Button
+                    variant="primary"
+                    className="text-xs py-1 px-3"
+                    onClick={(e) => { e.stopPropagation(); onMerge(); }}
+                    disabled={isMerging}
+                  >
+                    {isMerging ? 'Merging...' : 'Merge PR'}
+                  </Button>
+                ) : null}
+              </>
+            )}
+            {!fixResult.pr && fixResult.dependabotUrl && (
+              <a href={fixResult.dependabotUrl} target="_blank" rel="noopener noreferrer"
+                 className="text-xs text-accent hover:text-contrast">
+                View on Dependabot &rarr;
+              </a>
+            )}
           </div>
+          {fixResult.mergeError && (
+            <p className="text-xs text-critical mt-1">{fixResult.mergeError}</p>
+          )}
         </div>
       )}
       {fixResult?.error && (

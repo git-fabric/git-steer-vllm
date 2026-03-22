@@ -5,6 +5,7 @@
  * GET  /api/cve/results/:owner/:repo    — get scan results
  * POST /api/cve/triage/:cveId           — triage a CVE
  * POST /api/cve/fix                     — create a fix PR (single)
+ * POST /api/cve/merge                   — merge a Dependabot PR
  * POST /api/cve/fix-all                 — create fix PRs for ALL fixable CVEs
  * POST /api/cve/verify                  — verify fixes (body-based)
  * POST /api/cve/verify/:owner/:repo     — re-scan after fixes, compare to previous
@@ -373,6 +374,27 @@ export async function registerCveRoutes(app: FastifyInstance, config: WebServerC
         details: { alertNumber, package: alert.security_vulnerability?.package?.name, cveId },
       });
 
+      // Search for Dependabot PR for this package
+      let prInfo = null;
+      try {
+        const { data: pulls } = await octokit.rest.pulls.list({
+          owner, repo, state: 'open', per_page: 30,
+        });
+        const dependabotPr = pulls.find((p: any) =>
+          p.user?.login === 'dependabot[bot]' &&
+          (p.title.toLowerCase().includes(alert.security_vulnerability?.package?.name?.toLowerCase() ?? ''))
+        );
+        if (dependabotPr) {
+          prInfo = {
+            prNumber: dependabotPr.number,
+            prUrl: dependabotPr.html_url,
+            prTitle: dependabotPr.title,
+            prState: dependabotPr.state,
+            mergeable: dependabotPr.mergeable,
+          };
+        }
+      } catch { /* non-fatal */ }
+
       return reply.send({
         status: 'fix_available',
         package: alert.security_vulnerability?.package?.name,
@@ -382,9 +404,59 @@ export async function registerCveRoutes(app: FastifyInstance, config: WebServerC
         alertUrl: alert.html_url,
         message: `Upgrade ${alert.security_vulnerability?.package?.name} to ${alert.security_vulnerability?.first_patched_version?.identifier}`,
         dependabotUrl: `https://github.com/${owner}/${repo}/security/dependabot/${alertNumber}`,
+        pr: prInfo,
       });
     } catch (err: any) {
       return reply.status(500).send({ error: humanizeError(err) });
+    }
+  });
+
+  // ── Merge a Dependabot PR ─────────────────────────────────────────
+
+  app.post<{
+    Body: { owner?: string; repo?: string; prNumber?: number };
+  }>('/api/cve/merge', async (req, reply) => {
+    const { owner, repo, prNumber } = req.body as { owner?: string; repo?: string; prNumber?: number };
+    if (!owner || !repo || !prNumber) {
+      return reply.status(400).send({ error: 'owner, repo, and prNumber are required' });
+    }
+
+    const gh = (github as any);
+    const octokit = gh.getOctokit ? gh.getOctokit() : gh.octokit;
+
+    try {
+      // Get PR status first
+      const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+      if (pr.state !== 'open') {
+        return reply.send({ merged: pr.merged, status: pr.state, message: `PR #${prNumber} is ${pr.state}` });
+      }
+
+      // Merge the PR
+      await octokit.rest.pulls.merge({
+        owner, repo,
+        pull_number: prNumber,
+        merge_method: 'squash',
+      });
+
+      audit({
+        action: 'web_cve_merge',
+        repo: `${owner}/${repo}`,
+        result: 'success',
+        details: { prNumber, prUrl: pr.html_url },
+      });
+
+      return reply.send({
+        merged: true,
+        prNumber,
+        prUrl: pr.html_url,
+        message: `PR #${prNumber} merged successfully`,
+      });
+    } catch (err: any) {
+      const msg = err.message ?? String(err);
+      if (msg.includes('405')) return reply.status(409).send({ error: 'PR cannot be merged — check for merge conflicts or required checks' });
+      if (msg.includes('404')) return reply.status(404).send({ error: 'PR not found' });
+      return reply.status(500).send({ error: msg });
     }
   });
 

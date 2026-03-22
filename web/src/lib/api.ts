@@ -45,6 +45,7 @@ export const api = {
       return post<any>('/api/cve/fix', { owner, repo, alertNumber });
     },
     queue: () => get<QueueItem[]>('/api/cve/queue'),
+    merge: (owner: string, repo: string, prNumber: number) => post<any>('/api/cve/merge', { owner, repo, prNumber }),
     fixAll: (owner: string, repo: string) => post<any>('/api/cve/fix-all', { owner, repo }),
     verify: (owner: string, repo: string) => post<VerifyResult>(`/api/cve/verify/${owner}/${repo}`),
   },
