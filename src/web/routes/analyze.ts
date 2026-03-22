@@ -1,8 +1,11 @@
 /**
- * AI-powered CVE analysis routes.
+ * AI-powered CVE dependency analysis routes.
  *
- * Uses Ollama (qwen2.5-coder:7b by default) to analyze Dependabot alerts,
- * determine exploitability, and recommend actions (fix, VEX, escalate).
+ * Uses Ollama (qwen2.5-coder:7b by default) to trace dependency chains,
+ * identify fix approaches, and recommend actions. The AI does NOT judge
+ * CVE severity — NIST scores are authoritative. The AI helps understand
+ * HOW to fix, not WHETHER to fix.
+ *
  * Results are cached in Redis for 7 days.
  */
 
@@ -13,14 +16,14 @@ import { getRedis, KEYS } from '../redis.js';
 const ANALYSIS_TTL = 7 * 24 * 60 * 60; // 7 days
 
 interface AnalysisResult {
-  action: 'fix' | 'fix_ecosystem' | 'vex_permanent' | 'vex_temporary' | 'escalate';
-  reason: string;
-  command: string | null;
-  vex_justification: string | null;
-  vex_detail: string | null;
-  confidence: number;
-  exploitable: boolean;
+  dependency_type: 'direct' | 'transitive' | 'unknown';
   dependency_chain: string;
+  recommended_action: 'fix_direct' | 'fix_ecosystem' | 'vex_with_justification' | 'needs_discussion';
+  fix_command: string | null;
+  parent_package: string | null;
+  source_usage: string;
+  reasoning: string;
+  vex_option: string | null;
 }
 
 export async function registerAnalyzeRoutes(app: FastifyInstance, config: WebServerConfig): Promise<void> {
@@ -105,42 +108,51 @@ export async function registerAnalyzeRoutes(app: FastifyInstance, config: WebSer
           .join('\n');
       } catch { /* code search may fail */ }
 
-      // 6. Build prompt
-      const prompt = `You are a security analyst for git-steer. Analyze this CVE and recommend an action.
+      // 6. Build prompt — AI analyzes dependency chain and fix path, NOT severity
+      const prompt = `You are a dependency analyst for git-steer. Your job is to trace how a vulnerable package entered a project and recommend the best fix approach.
+
+IMPORTANT RULES:
+- Do NOT judge the severity — NIST already scored this CVE as ${severity.toUpperCase()}.
+- Do NOT say a CVE is "not vulnerable" or "not exploitable" — that is not your call.
+- DO trace the dependency chain: is it direct (in manifest) or transitive (only in lock file)?
+- DO recommend the specific command to fix it based on the ecosystem.
+- DO identify if a VEX entry would be appropriate for LOW severity issues where the fix requires significant effort.
 
 CVE: ${alert.security_advisory?.cve_id ?? 'N/A'}
-Severity: ${severity}
+NIST Severity: ${severity.toUpperCase()} (this is authoritative — do not override)
 Package: ${pkg}
 Ecosystem: ${ecosystem}
 Vulnerable range: ${vulnRange}
 Fix version: ${fixVersion ?? 'none available'}
 Manifest path: ${manifestPath}
-Description: ${description.slice(0, 2000)}
 
 Repository: ${owner}/${repo}
-Manifest content:
-${manifestContent.slice(0, 3000)}
+
+Manifest content (dependency declarations):
+${manifestContent.slice(0, 3000) || 'not available'}
 
 Lock file entry for ${pkg}:
 ${lockExcerpt || 'not found in lock file'}
 
-Source code references to ${pkg}:
-${importGrep || 'no direct imports found'}
+Source code that references ${pkg}:
+${importGrep || 'no direct imports found in source'}
 
-Is this a direct dependency (listed in the manifest) or transitive (only in lock file)?
-Is the vulnerable code path reachable in this project?
-What is the recommended action?
+Answer these questions:
+1. Is ${pkg} a direct dependency (listed in the manifest) or transitive (only appears in the lock file)?
+2. If transitive, what parent package pulls it in?
+3. What is the exact command to fix this in the ${ecosystem} ecosystem?
+4. For LOW severity with no direct import: would a VEX entry be reasonable while waiting for an upstream fix?
 
 Respond with ONLY valid JSON:
 {
-  "action": "fix" | "fix_ecosystem" | "vex_permanent" | "vex_temporary" | "escalate",
-  "reason": "plain English explanation",
-  "command": "exact command to run if fix_ecosystem, null otherwise",
-  "vex_justification": "component_not_present" | "vulnerable_code_not_reachable" | "vulnerable_code_cannot_be_controlled_by_adversary" | "inline_mitigations_already_exist" | null,
-  "vex_detail": "explanation for VEX, null if not VEX",
-  "confidence": 0.0 to 1.0,
-  "exploitable": true | false,
-  "dependency_chain": "how this package got into the project"
+  "dependency_type": "direct" | "transitive" | "unknown",
+  "dependency_chain": "package → parent → grandparent (trace how it entered the project)",
+  "recommended_action": "fix_direct" | "fix_ecosystem" | "vex_with_justification" | "needs_discussion",
+  "fix_command": "the exact command to run, or null if no automated fix",
+  "parent_package": "the parent that pulls in the vulnerable package, or null if direct",
+  "source_usage": "describe how the project uses this package based on the source grep results",
+  "reasoning": "plain English explanation of your recommendation",
+  "vex_option": "if a VEX entry is reasonable, explain why. null if fix is straightforward"
 }`;
 
       // 7. Call Ollama
@@ -171,14 +183,14 @@ Respond with ONLY valid JSON:
         analysis = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
       } catch {
         analysis = {
-          action: 'escalate',
-          reason: `AI analysis returned unparseable response: ${rawText.slice(0, 200)}`,
-          command: null,
-          vex_justification: null,
-          vex_detail: null,
-          confidence: 0,
-          exploitable: true,
-          dependency_chain: 'unknown',
+          dependency_type: 'unknown',
+          dependency_chain: 'unable to determine',
+          recommended_action: 'needs_discussion',
+          fix_command: null,
+          parent_package: null,
+          source_usage: 'AI analysis returned unparseable response',
+          reasoning: rawText.slice(0, 300),
+          vex_option: null,
         };
       }
 
