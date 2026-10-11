@@ -83,9 +83,21 @@ jobs:
   deploy:
     name: Deploy to k3s
     needs: build-and-deploy
-    runs-on: [self-hosted, k3s]
+    # No self-hosted k3s runner is registered yet, and a job waiting for one is
+    # cancelled after 24h. Until there is one, a fill-in runner takes the job
+    # and the stub step below reports what would have been deployed. Set the
+    # K3S_RUNNER_LABELS repo variable to ["self-hosted","k3s"] to deploy for real.
+    runs-on: ${{ fromJSON(vars.K3S_RUNNER_LABELS || '"ubuntu-latest"') }}
     steps:
+      - name: Deploy (stub, no k3s runner yet)
+        if: vars.K3S_RUNNER_LABELS == ''
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ needs.build-and-deploy.outputs.sha_short }}
+        run: |
+          echo "::notice title=Deploy stubbed::No k3s runner registered (K3S_RUNNER_LABELS unset). Would deploy $IMAGE_REF to deployment/${{ env.DEPLOYMENT_NAME }} in ${{ env.NAMESPACE }}."
+
       - name: Install kubectl
+        if: vars.K3S_RUNNER_LABELS != ''
         run: |
           if ! command -v kubectl &> /dev/null; then
             curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -94,6 +106,7 @@ jobs:
           fi
 
       - name: Configure kubectl
+        if: vars.K3S_RUNNER_LABELS != ''
         run: |
           # Use the service account token mounted in the pod
           KUBE_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
@@ -105,6 +118,7 @@ jobs:
           kubectl config use-context default
 
       - name: Deploy
+        if: vars.K3S_RUNNER_LABELS != ''
         run: |
           kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
             ${{ env.CONTAINER_NAME }}=${{ env.IMAGE }}:${{ needs.build-and-deploy.outputs.sha_short }} \
