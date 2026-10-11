@@ -34,7 +34,7 @@
     "@fastify/static": "^9.0.0",
     "@git-fabric/cve": "https://github.com/git-fabric/cve.git",
     "@git-fabric/gateway": "https://github.com/git-fabric/gateway.git",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@octokit/plugin-retry": "^7.2.1",
     "@octokit/plugin-throttling": "^10.0.0",
     "chalk": "^5.3.0",
